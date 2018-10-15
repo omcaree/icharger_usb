@@ -148,7 +148,7 @@ int main(int argc, char **argv) {
 		sprintf(topicName, "channel_%d/start_storage",charger_channel);
 		startStorageServices.push_back(n.advertiseService<std_srvs::Trigger::Request, std_srvs::Trigger::Response>(topicName,boost::bind(startStorageCallback, _1, _2, charger_channel)));
 	}
-	ros::Rate r(10);
+	ros::Rate r(1);
 	while (ros::ok()) {
 		for (int ch = 1; ch <= 2; ch++) {
 			/* Read channel status */
