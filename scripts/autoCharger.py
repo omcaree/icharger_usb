@@ -61,7 +61,7 @@ def chargeCallback(data, channel):
 	channels[channel].charge = data.data;
 
 # Once charing has been initiated, this function is called in a thread to monitor the charging status
-def monitorChannel(sharepointSession, logEtag, logID, ch):
+def monitorChannel(sharepointSession, logEtag, logID, ch, spID):
 	# Wait a while for charge to initialise
 	sleep(10)
 	comments = ""
@@ -69,6 +69,13 @@ def monitorChannel(sharepointSession, logEtag, logID, ch):
 	# Loop forever unless charge completes or is interrupted
 	# TODO: Figure out if charger has any error status codes and check for these too
 	while (True):
+#		r = sharepointSession.post('https://teams.ljmu.ac.uk/7/Drones/Operations/_api/contextinfo')
+#		rootXML = ET.fromstring(r.text)
+#		digest = rootXML[1].text
+#		cells = ','.join(str(i) for i in channels[ch].cell_voltages)
+#		payload = "{{ '__metadata': {{ 'type': 'SP.Data.Battery_x0020_charge_x0020_dataListItem'}},'Battery': {battery},'Voltage': {voltage}, 'Charge': {charge}, 'Cells','{cells}'}}".format(battery=spID,voltage=channels[ch].pack_voltage,charge=float(channels[ch].charge)/1000.0,cells=cells)
+#		r = sharepointSession.post("https://teams.ljmu.ac.uk/7/Drones/Operations/_api/Web/Lists/GetByTitle('Battery charge data')/items", timeout=10, data=payload, headers={"X-RequestDigest":digest,"content-type": "application/json;odata=verbose"})
+#		print(r.text)
 		if channels[ch].status == 40:
 			print("Charger " + str(channels[ch].charger) + " channel " + str(channels[ch].channel) + " is done")
 			break
@@ -109,6 +116,8 @@ def autoCharger():
 			rospy.Subscriber(topic[0].replace('status','cell_voltages'), Float32MultiArray, callback=cellVoltagesCallback, callback_args = channel)
 			rospy.Subscriber(topic[0].replace('status','charge'), Int32, callback=chargeCallback, callback_args = channel)
 			channel+=1
+	
+	print('Found ' + str(channel) + ' charger channels')
 	
 	# Loop forever
 	while True:
@@ -200,14 +209,14 @@ def autoCharger():
 			chargerNum = -1;
 			channelNum = -1;
 			for channel in channels:
-				if channel.status == 0:
+				if (channel.status == 0 or channel.status == 1 or channel.status == 40) and sum(channel.cell_voltages) < 1.0:
 					chargerNum = channel.charger
 					channelNum = channel.channel
 					break
 				chIdx += 1
 			if chargerNum == -1 and channelNum == -1:
 				print("No charger channels available, try agian later...")
-				return
+				continue
 			print("Please connect to charger " + str(chargerNum) + " channel " + str(channelNum))
 			
 			# Wait until battery is connected (check both pack voltage and number of cells)
@@ -269,7 +278,7 @@ def autoCharger():
 			batteryLogData = untangle.parse(r.text)
 			logEtag = batteryLogData.entry['m:etag']
 			logID = batteryLogData.entry.content.m_properties.d_ID.cdata;
-			t = threading.Thread(target=monitorChannel, args=(sharepointSession,logEtag,logID,chIdx,))
+			t = threading.Thread(target=monitorChannel, args=(sharepointSession,logEtag,logID,chIdx,spID,))
 			t.daemon = True
 			t.start()
 		else:
