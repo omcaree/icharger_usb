@@ -165,18 +165,25 @@ int main(int argc, char **argv) {
 				ROS_ERROR("Channel %d status failed with code 0x%X", ch, retval);
 			}
 			
-			/* Publish pack voltage */
-			std_msgs::Float32 pack_voltage;
-			pack_voltage.data = ((float)chStatus.output_voltage.value)/1000.0f;
-			packVoltagePublishers.at(ch-1).publish(pack_voltage);
+			float cellsum = 0;
 			
 			/* Publish cell voltages */
 			std_msgs::Float32MultiArray cell_voltages;
 			cell_voltages.data.clear();
 			for (int j=0; j<10; j++) {
 				cell_voltages.data.push_back(((float)chStatus.cell_voltage[j])/1000.0f);
+				cellsum += ((float)chStatus.cell_voltage[j])/1000.0f;
 			}
 			cellVoltagePublishers.at(ch-1).publish(cell_voltages);
+			
+			/* Publish pack voltage */
+			std_msgs::Float32 pack_voltage;
+			if (cellsum > 1.0f) { /* Deal with fact that charger reports a channel voltage even if pack is disconnected */
+				pack_voltage.data = ((float)chStatus.output_voltage.value)/1000.0f;
+			} else {
+				pack_voltage.data = 0.0f;
+			}
+			packVoltagePublishers.at(ch-1).publish(pack_voltage);
 			
 			/* Publish charge */
 			std_msgs::Int32 charge;
