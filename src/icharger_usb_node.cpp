@@ -4,6 +4,7 @@
 #include "std_msgs/Float32MultiArray.h"
 #include "std_srvs/Trigger.h"
 #include "icharger_usb/SetCurrent.h"
+#include "icharger_usb/ChannelData.h"
 
 #include "icharger_usb.h"
 
@@ -93,6 +94,7 @@ int main(int argc, char **argv) {
 	ros::NodeHandle n;
 	ros::ServiceServer chargeCurrentService;
 	ros::ServiceServer dischargeCurrentService;
+	std::vector<ros::Publisher> channelDataPublishers;
 	std::vector<ros::Publisher> packVoltagePublishers;
 	std::vector<ros::Publisher> cellVoltagePublishers;
 	std::vector<ros::Publisher> chargePublishers;
@@ -135,6 +137,10 @@ int main(int argc, char **argv) {
 		/* Status publisher */
 		sprintf(topicName, "channel_%d/status",charger_channel);
 		statusPublishers.push_back(n.advertise<std_msgs::Int32>(topicName, 1));
+		
+		/* Channel data publisher*/
+		sprintf(topicName, "channel_%d/data",charger_channel);
+		channelDataPublishers.push_back(n.advertise<icharger_usb::ChannelData>(topicName, 1));
 		
 		/* Charge service */
 		sprintf(topicName, "channel_%d/start_charge",charger_channel);
@@ -181,6 +187,14 @@ int main(int argc, char **argv) {
 			std_msgs::Int32 status;
 			status.data = chStatus.run_status;
 			statusPublishers.at(ch-1).publish(status);
+			
+			/* Publish channel data (combined in custom message) */
+			icharger_usb::ChannelData data;
+			data.pack_voltage = pack_voltage.data;
+			data.cell_voltages = cell_voltages.data;
+			data.charge = charge.data;
+			data.status = status.data;
+			channelDataPublishers.at(ch-1).publish(data);
 		}
 		r.sleep();
 		ros::spinOnce();
