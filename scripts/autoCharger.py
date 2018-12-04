@@ -61,7 +61,7 @@ def chargeCallback(data, channel):
 	channels[channel].charge = data.data;
 
 # Once charing has been initiated, this function is called in a thread to monitor the charging status
-def monitorChannel(sharepointSession, logEtag, logID, ch):
+def monitorChannel(sharepointSession, logEtag, logID, ch, spID):
 	# Wait a while for charge to initialise
 	sleep(10)
 	comments = ""
@@ -69,6 +69,13 @@ def monitorChannel(sharepointSession, logEtag, logID, ch):
 	# Loop forever unless charge completes or is interrupted
 	# TODO: Figure out if charger has any error status codes and check for these too
 	while (True):
+#		r = sharepointSession.post('https://teams.ljmu.ac.uk/7/Drones/Operations/_api/contextinfo')
+#		rootXML = ET.fromstring(r.text)
+#		digest = rootXML[1].text
+#		cells = ','.join(str(i) for i in channels[ch].cell_voltages)
+#		payload = "{{ '__metadata': {{ 'type': 'SP.Data.Battery_x0020_charge_x0020_dataListItem'}},'Battery': {battery},'Voltage': {voltage}, 'Charge': {charge}, 'Cells','{cells}'}}".format(battery=spID,voltage=channels[ch].pack_voltage,charge=float(channels[ch].charge)/1000.0,cells=cells)
+#		r = sharepointSession.post("https://teams.ljmu.ac.uk/7/Drones/Operations/_api/Web/Lists/GetByTitle('Battery charge data')/items", timeout=10, data=payload, headers={"X-RequestDigest":digest,"content-type": "application/json;odata=verbose"})
+#		print(r.text)
 		if channels[ch].status == 40:
 			print("Charger " + str(channels[ch].charger) + " channel " + str(channels[ch].channel) + " is done")
 			break
@@ -91,7 +98,7 @@ def autoCharger():
 	signal.signal(signal.SIGINT, signal_handler)
 	camera = PiCamera(resolution = (480,320), framerate=30)
 	rospy.init_node('autoCharger', anonymous=True)
-	topics = rospy.get_published_topics()
+	topics = sorted(rospy.get_published_topics())
 	
 	# Identify chargers available and subscribe to their topics
 	# NOTE: This only runs once, because running repeatedly could break things
@@ -109,6 +116,8 @@ def autoCharger():
 			rospy.Subscriber(topic[0].replace('status','cell_voltages'), Float32MultiArray, callback=cellVoltagesCallback, callback_args = channel)
 			rospy.Subscriber(topic[0].replace('status','charge'), Int32, callback=chargeCallback, callback_args = channel)
 			channel+=1
+	
+	print('Found ' + str(channel) + ' charger channels')
 	
 	# Loop forever
 	while True:
@@ -178,7 +187,11 @@ def autoCharger():
 		
 		# Look up battery data on sharepoint
 		print("Looking up data")
-		r = sharepointSession.get("https://teams.ljmu.ac.uk/7/Drones/Operations/_api/Web/Lists/GetByTitle('Battery register')/items?$select=ID,Title,Brand,Model,Cells,Capacity_x0020__x0028_Ah_x0029_&$filter=Title eq '" + symbol.data + "'", timeout=30)
+		try: 
+			r = sharepointSession.get("https://teams.ljmu.ac.uk/7/Drones/Operations/_api/Web/Lists/GetByTitle('Battery register')/items?$select=ID,Title,Brand,Model,Cells,Capacity_x0020__x0028_Ah_x0029_&$filter=Title eq '" + symbol.data + "'", timeout=30)
+		except requests.Timeout, e:
+			print("Error looking up data, please try again")
+			continue
 		batteryData = untangle.parse(r.text)
 		spID = batteryData.feed.entry.content.m_properties.d_ID.cdata;
 		brand = batteryData.feed.entry.content.m_properties.d_Brand.cdata;
@@ -196,14 +209,14 @@ def autoCharger():
 			chargerNum = -1;
 			channelNum = -1;
 			for channel in channels:
-				if channel.status == 0 or channel.status == 1 or channel.status == 40:
+				if (channel.status == 0 or channel.status == 1 or channel.status == 40) and sum(channel.cell_voltages) < 1.0:
 					chargerNum = channel.charger
 					channelNum = channel.channel
 					break
 				chIdx += 1
 			if chargerNum == -1 and channelNum == -1:
 				print("No charger channels available, try agian later...")
-				return
+				continue
 			print("Please connect to charger " + str(chargerNum) + " channel " + str(channelNum))
 			
 			# Wait until battery is connected (check both pack voltage and number of cells)
@@ -211,31 +224,21 @@ def autoCharger():
 				sleep(1)
 			
 			# Charge or storage
-			option = raw_input("Would you like to (C)harge or (S)torage?: ")
+			option = raw_input("(C)harge or (S)torage?: ")
 			
 			# Sanity check pack health
-			if channels[chIdx].dv > 0.05:
-				print("Pack has a dV of >50mV, do not charge and inform DFO as soon as possible")
+			#if channels[chIdx].dv > 0.05:
+			#	print("Pack has a dV of >50mV, do not charge and inform DFO as soon as possible")
+			#	continue
 			if channels[chIdx].pack_voltage < 3*float(cells) or channels[chIdx].pack_voltage > 4.2*float(cells):
 				print("Pack voltage is out of range, do not charge and inform DFO as soon as possible")
+				continue
 			
 			# Take the relevent actions
 			action = ""
 			if option.upper() == "C":
-				setCurrent = rospy.ServiceProxy("/charger_" + str(chargerNum) +"/charge_current", SetCurrent)
-				setCurrent(float(capacity))
-				startCharge = rospy.ServiceProxy("/charger_" + str(chargerNum) + "/channel_" + str(channelNum) + "/start_charge", Trigger)
-				startCharge()
-				print("Charge started")
 				action = "Charge"
 			elif option.upper() == "S":
-				setCurrent = rospy.ServiceProxy("/charger_" + str(chargerNum) +"/charge_current", SetCurrent)
-				setCurrent(float(capacity))
-				setCurrent = rospy.ServiceProxy("/charger_" + str(chargerNum) +"/discharge_current", SetCurrent)
-				setCurrent(float(capacity))
-				startStorage = rospy.ServiceProxy("/charger_" + str(chargerNum) + "/channel_" + str(channelNum) + "/start_storage", Trigger)
-				startStorage()
-				print("Storage started")
 				action = "Storage"
 			else:
 				print("Unrecognised option, try again...")
@@ -246,14 +249,36 @@ def autoCharger():
 			rootXML = ET.fromstring(r.text)
 			digest = rootXML[1].text
 			payload = "{{ '__metadata': {{ 'type': 'SP.Data.Battery_x0020_logsListItem'}},'BatteryId': {battery},'Action': '{action}','Pre_x002d_V': {prev},'Pre_x002d_dV': {predv}}}".format(battery=spID,action=action,prev=channels[chIdx].pack_voltage,predv=channels[chIdx].dv)
-			r = sharepointSession.post("https://teams.ljmu.ac.uk/7/Drones/Operations/_api/Web/Lists/GetByTitle('Battery logs')/items", timeout=30, data=payload, headers={"X-RequestDigest":digest,"content-type": "application/json;odata=verbose"})
+			while True:
+				try:
+					r = sharepointSession.post("https://teams.ljmu.ac.uk/7/Drones/Operations/_api/Web/Lists/GetByTitle('Battery logs')/items", timeout=10, data=payload, headers={"X-RequestDigest":digest,"content-type": "application/json;odata=verbose"})
+					break;
+				except:
+					sleep(1)
 			
 			# Returned record contains log ID and ETag, both necessary for updating record
 			# Extract these and pass to monitoring thread
+			if option.upper() == "C":
+				setCurrent = rospy.ServiceProxy("/charger_" + str(chargerNum) +"/charge_current", SetCurrent)
+				setCurrent(float(capacity))
+				startCharge = rospy.ServiceProxy("/charger_" + str(chargerNum) + "/channel_" + str(channelNum) + "/start_charge", Trigger)
+				startCharge()
+				print("Charge started")
+			elif option.upper() == "S":
+				setCurrent = rospy.ServiceProxy("/charger_" + str(chargerNum) +"/charge_current", SetCurrent)
+				setCurrent(float(capacity))
+				setCurrent = rospy.ServiceProxy("/charger_" + str(chargerNum) +"/discharge_current", SetCurrent)
+				setCurrent(float(capacity))
+				startStorage = rospy.ServiceProxy("/charger_" + str(chargerNum) + "/channel_" + str(channelNum) + "/start_storage", Trigger)
+				startStorage()
+				print("Storage started")
+			else:
+				print("Unrecognised option, try again...")
+				continue
 			batteryLogData = untangle.parse(r.text)
 			logEtag = batteryLogData.entry['m:etag']
 			logID = batteryLogData.entry.content.m_properties.d_ID.cdata;
-			t = threading.Thread(target=monitorChannel, args=(sharepointSession,logEtag,logID,chIdx,))
+			t = threading.Thread(target=monitorChannel, args=(sharepointSession,logEtag,logID,chIdx,spID,))
 			t.daemon = True
 			t.start()
 		else:
